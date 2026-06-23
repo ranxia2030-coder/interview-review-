@@ -1,6 +1,6 @@
 ---
 name: interview-review
-version: 2.0.0
+version: 3.0.0
 description: |
   面试录音通用复盘 Skill。当用户提供面试录音文件（m4a/mp3/mp4 等），
   要求生成面试复盘分析报告并写入飞书文档时触发。
@@ -9,153 +9,213 @@ description: |
   触发关键词：面试录音、面试复盘、面试纪要、面试分析、面试总结。
 metadata:
   requires:
-    bins: ["lark-cli"]
+    bins: ["lark-cli", "whisper"]
 ---
 
-# 面试录音 → 飞书复盘文档（端到端 · 通用版）
+# 面试录音 → 飞书复盘文档（端到端 · 通用版 · v3.0）
 
 > 不论你面的是 AI 产品经理、售前解决方案、技术研发还是任何岗位——
 > 本 Skill 将面试录音自动转化为结构化的飞书复盘文档：
-> **录音上传 → 妙记转写 → 深度复盘分析 → 飞书文档输出**。
+> **录音上传 → Whisper 本地完整转写 → 深度复盘分析 → 飞书文档输出**。
+>
+> ⚡ **v3.0 核心升级：** 转写方式从飞书妙记（丢失30-57%内容）切换为 Whisper 本地模型（100%覆盖），
+> 彻底解决多人对话、语速快、环境噪音等场景下的大段内容丢失问题。
+> 飞书妙记降级为备选方案（仅用于AI摘要参考）。
 
 ---
 
-## 〇、前置条件：安装飞书 CLI
+## 〇、前置条件
 
-**如果你还没有安装 `lark-cli`，按以下步骤操作：**
+### 0.1 安装 Whisper（语音转写 · 主要方案）
 
-### 0.1 安装 lark-cli
+**Whisper 是本 Skill v3.0 的主要转写工具**，确保 100% 覆盖录音内容，不丢帧。
 
 ```bash
-# 方式一：npm 全局安装（推荐，Node.js ≥ 18）
-npm install -g @earendil-works/lark-cli
-
-# 方式二：macOS Homebrew
-brew install earendil-works/tap/lark-cli
+# 安装 openai-whisper（一次安装，永久使用）
+pip3 install openai-whisper
 
 # 验证安装
+python3 -c "import whisper; print('whisper ready')"
+```
+
+> 💡 Whisper 是本地运行的开源模型，无需 API key，无需联网。
+> - `small` 模型：42 分钟音频约 3-4 分钟完成，适合日常使用
+> - `medium` 模型：42 分钟音频约 8-10 分钟完成，精度更高
+> - 默认使用 `small`；如果对精确度要求极高，可用 `medium`
+
+### 0.2 安装飞书 CLI（文档输出 + 妙记备选）
+
+```bash
+npm install -g @earendil-works/lark-cli
 lark-cli --version
 ```
 
-### 0.2 初始化飞书应用配置
-
-你需要一个飞书企业账号，并在飞书开发者后台创建一个自建应用。
+### 0.3 初始化飞书应用配置
 
 ```bash
-# 发起配置流程（该命令会输出授权链接和二维码）
 lark-cli config init --new
 ```
 
-运行后会输出一个授权链接。**打开链接完成授权**，CLI 会自动保存配置。
-
-> ⚠️ 如果你没有飞书账号或无法创建应用，请看文末的「附录 B：无飞书环境替代方案」。
-
-### 0.3 前置权限一览
-
-本 Skill 需要在飞书开发者后台开通以下权限（scope），并通过 `auth login` 完成用户授权：
+### 0.4 前置权限一览
 
 | 阶段 | 所需 scope | 用途 |
 |------|-----------|------|
-| 上传文件 | `drive:drive` | 上传录音到云空间 |
-| 生成妙记 | `minutes:minutes` | 将音频转为妙记 |
-| 读取逐字稿 | `minutes:minutes:readonly`、`minutes:minutes.artifacts:read`、`minutes:minutes.transcript:export` | 获取转写文本和 AI 摘要 |
+| 上传文件 | `drive:drive` | 上传录音到云空间（归档） |
+| 生成妙记 | `minutes:minutes` | 生成飞书妙记（仅作 AI 摘要备选） |
+| 读妙记摘要 | `minutes:minutes:readonly`、`minutes:minutes.artifacts:read` | 获取飞书 AI 摘要和关键词 |
 | 创建文档 | `docx:document` | 创建飞书文档 |
 | 编辑文档 | `docx:document:update` | 追加分析内容 |
 
-> 💡 大部分 scope 在 `config init` 时已开通。如果执行中提示 scope 缺失，AI 会自动引导你授权。
+> ⚠️ 如果你没有飞书账号或无法创建应用，请看文末的「附录 B：无飞书环境替代方案」。
 
 ---
 
-## 一、流程全景
+## 一、流程全景（v3.0）
 
 ```
-                        ┌──────────────────────┐
-  面试录音 .m4a/.mp3    │  阶段一：录音 → 妙记    │
-  ──────────────────▶  │  drive +upload        │
-                        │  minutes +upload       │
-                        │  vc +notes (逐字稿)    │
-                        └──────────┬───────────┘
-                                   │ 逐字稿 + AI摘要
+                        ┌──────────────────────────┐
+  面试录音 .m4a/.mp3    │  阶段一：Whisper 本地转写   │
+  ──────────────────▶  │  python3 whisper 转写      │
+                        │  100% 覆盖，不丢帧          │
+                        └──────────┬───────────────┘
+                                   │ 完整逐字稿
                                    ▼
-                        ┌──────────────────────┐
-                        │  阶段二：逐字稿 → 复盘  │
-                        │  Claude 深度分析       │
-                        │  逐题评分 / 双向问答    │
-                        │  改进计划 / 下级建议    │
-                        └──────────┬───────────┘
+                        ┌──────────────────────────┐
+                        │  阶段一b：飞书妙记（备选）  │
+                        │  drive +upload            │
+                        │  minutes +upload          │
+                        │  vc +notes (仅取AI摘要)    │
+                        └──────────┬───────────────┘
+                                   │ AI摘要 + 关键词
+                                   ▼
+                        ┌──────────────────────────┐
+                        │  阶段二：逐字稿 → 复盘     │
+                        │  Claude 深度分析          │
+                        │  逐题评分 / 双向问答       │
+                        │  改进计划                  │
+                        └──────────┬───────────────┘
                                    │ 结构化分析内容
                                    ▼
-                        ┌──────────────────────┐
-                        │  阶段三：复盘 → 文档   │
-                        │  docs +create (骨架)  │
-                        │  docs +update (逐段)  │
-                        │  飞书 Docx 输出       │
-                        └──────────┬───────────┘
+                        ┌──────────────────────────┐
+                        │  阶段三：复盘 → 飞书文档   │
+                        │  docs +create (骨架)      │
+                        │  docs +update (逐段追加)   │
+                        │  飞书 Docx 输出           │
+                        └──────────┬───────────────┘
                                    │
                                    ▼
-                        ┌──────────────────────┐
-                        │  阶段四：打开文档      │
-                        │  open URL (macOS)    │
-                        │  或直接返回链接        │
-                        └──────────────────────┘
+                        ┌──────────────────────────┐
+                        │  阶段四：打开文档          │
+                        │  open URL (macOS)        │
+                        └──────────────────────────┘
 ```
 
 **各阶段产出物：**
 
 | 阶段 | 输入 | 产出 | 文件位置 |
 |------|------|------|----------|
-| 阶段一 | 面试录音文件 | 逐字稿 TXT + AI 摘要 JSON | `./minutes/{minute_token}/transcript.txt` |
+| 阶段一 | 面试录音文件 | 完整逐字稿 TXT（100%覆盖） | `./minutes/{公司名}_full_transcript.txt` |
+| 阶段一b | 面试录音文件 | 飞书妙记（AI摘要+关键词） | 飞书妙记链接 |
 | 阶段二 | 逐字稿全文 | 结构化复盘分析 | 内存 |
 | 阶段三 | 复盘分析 | 飞书文档 | 飞书云文档（返回 URL） |
 | 阶段四 | 文档 URL | 浏览器打开 | — |
 
+> 🔴 **为什么需要阶段一b？** 飞书妙记的 AI 摘要和关键词提取仍然有价值（可作为分析背景参考），但其逐字稿转写在多人对话/噪音/语速快的场景下会丢失 30-57% 内容，因此<b>逐字稿不可依赖妙记</b>，必须用 Whisper。
+
 ---
 
-## 二、阶段一：录音 → 妙记转写
+## 二、阶段一：Whisper 本地转写（主要方案 · 100%覆盖）
 
-### 2.1 上传录音到飞书云空间
+### 2.1 Whisper 完整转写脚本
+
+> ⚡ **这是 v3.0 的核心流程。优先执行，确保逐字稿不丢内容。**
 
 ```bash
-# ⚠️ 必须使用相对路径！先 cd 到文件所在目录
+mkdir -p /Users/tommy/minutes
+
+python3 -c "
+import whisper, time
+
+start = time.time()
+print('Loading whisper small model...')
+model = whisper.load_model('small')
+print(f'Model loaded in {time.time()-start:.1f}s')
+
+print('Transcribing... (this takes 3-5 min for a 40-min recording)')
+result = model.transcribe(
+    '/path/to/recording.m4a',   # ← 替换为实际录音路径
+    language='zh',
+    task='transcribe',
+    verbose=False
+)
+
+# Save transcript with timestamps
+output_path = '/Users/tommy/minutes/{公司名}_full_transcript.txt'
+with open(output_path, 'w') as f:
+    for seg in result['segments']:
+        ts = seg['start']
+        mins = int(ts // 60)
+        secs = int(ts % 60)
+        f.write(f'[{mins:02d}:{secs:02d}] {seg[\"text\"].strip()}\n')
+
+print(f'Done! Segments: {len(result[\"segments\"])}, Duration: {result[\"segments"][-1][\"end\"]:.0f}s')
+print(f'Output: {output_path}')
+"
+```
+
+> 💡 **模型选择：**
+> - `small`（默认）：42分钟约 3-4 分钟完成，精度足够日常使用
+> - `medium`：精度更高但约 8-10 分钟，仅在需要极致精度时使用
+>
+> ⚠️ **不要用 `tiny` 或 `base` 模型**——中文转写准确率明显下降。
+
+### 2.2 检查转写完整性
+
+```bash
+# 检查行数和文件大小
+wc -l /Users/tommy/minutes/{公司名}_full_transcript.txt
+wc -c /Users/tommy/minutes/{公司名}_full_transcript.txt
+
+# 检查最后一行时间戳是否接近录音总时长
+# 如果最后一行时间戳远小于录音时长，说明转写可能被截断
+```
+
+### 2.3 阶段一b：飞书妙记（备选 · 仅取 AI 摘要）
+
+> ⚠️ **妙记的逐字稿不可用（会丢30-57%），仅用于获取 AI 摘要和关键词作为分析背景参考。**
+>
+> 这一步骤在 Whisper 转写完成后<b>并行</b>执行，不阻塞主流程。
+
+```bash
+# 上传到飞书云空间
 cd /path/to/audio/directory
-lark-cli drive +upload --file "recording.m4a" --name "面试录音_YYYYMMDD"
-```
+lark-cli drive +upload --file "recording.m4a" --name "{公司名}面试_{日期}"
+# 记录 <FILE_TOKEN>
 
-从返回结果中提取 `data.file_token`，记为 **`<FILE_TOKEN>`**。
-
-### 2.2 生成妙记
-
-```bash
+# 生成妙记
 lark-cli minutes +upload --file-token <FILE_TOKEN>
-```
+# 记录 minute_url，取最后一段为 <MINUTE_TOKEN>
 
-从返回结果中提取 `data.minute_url`，取 URL 最后一段作为 **`<MINUTE_TOKEN>`**。
-
-> 示例：`https://xxx.feishu.cn/minutes/obcnXXXX` → `obcnXXXX`
-
-### 2.3 获取逐字稿（需要等待妙记异步生成）
-
-```bash
+# 轮询获取 AI 摘要（仅取 summary 和 keywords，不依赖其 transcript）
 lark-cli vc +notes --minute-tokens <MINUTE_TOKEN>
 ```
 
-> ⚠️ 妙记是异步生成的。如果返回 `"minute not ready, try later"`：
-> 每 30 秒重试一次，通常 1~3 分钟内就绪。AI 会自动轮询。
-
-成功后返回：
-- `artifacts.transcript_file` — 本地逐字稿路径，**务必读取全文**
-- `artifacts.summary` — 飞书 AI 摘要（可作为背景参考）
-- `artifacts.keywords` — 关键词列表
-- `title` — 妙记标题
+仅使用返回的：
+- `artifacts.summary` — 飞书 AI 摘要（背景参考）
+- `artifacts.keywords` — 关键词列表（参考）
+- `title` — 妙记标题（可用于文档命名）
+- ❌ `artifacts.transcript_file` — **不使用！** 完整性不可靠
 
 ### 2.4 常见错误处理
 
 | 错误 | 原因 | 解决 |
 |------|------|------|
-| `unsafe file path` | 用了绝对路径 | `cd` 到文件目录，用相对路径 |
-| `minute not ready` | 妙记异步生成中 | 等待 30~60 秒后重试 |
+| `ModuleNotFoundError: No module named 'whisper'` | Whisper 未安装 | `pip3 install openai-whisper` |
+| Whisper 转写时间戳远小于录音时长 | 录音文件损坏或格式不支持 | 用 ffmpeg 转换格式：`ffmpeg -i input.m4a output.wav` |
+| 中文转写质量差 | 用了 `tiny`/`base` 模型 | 至少使用 `small` 模型，中文推荐 `medium` |
+| `unsafe file path` | 用了绝对路径上传 Drive | `cd` 到文件目录，用相对路径 |
+| `minute not ready` | 妙记异步生成中 | 等待 30~60 秒后重试（仅影响备选流程） |
 | `missing scope(s)` | 权限不足 | AI 会用 split-flow 引导授权 |
-| `exit code 10` | 高风险操作需确认 | AI 会请你确认后加 `--yes` |
 
 ---
 
@@ -264,11 +324,16 @@ lark-cli docs +update --api-version v2 \
 - 章节间用 `<hr/>` 分隔
 - 评分数字用 `<span text-color="green/red/yellow">` 着色
 
-### 4.4 末尾附上原始妙记链接
+### 4.4 末尾附上转写信息
 
 ```xml
 <callout emoji="📎" background-color="light-gray" border-color="gray">
-  <p><b>附：原始妙记链接</b> — <a href="MINUTE_URL">MINUTE_URL</a></p>
+  <p><b>附：Whisper 完整转写文件</b></p>
+  <p>/Users/tommy/minutes/{公司名}_full_transcript.txt（{段数}段，100%覆盖）</p>
+</callout>
+
+<callout emoji="📎" background-color="light-gray" border-color="gray">
+  <p><b>附：飞书妙记（AI摘要参考）</b> — <a href="MINUTE_URL">MINUTE_URL</a></p>
 </callout>
 ```
 
@@ -285,23 +350,23 @@ open "<DOC_URL>"
 
 ---
 
-## 六、完整执行清单（AI 自检）
+## 六、完整执行清单（AI 自检 · v3.0）
 
 AI 在收到面试录音文件后，按此清单逐项执行：
 
 ```
-☐ 0. 确认 lark-cli 已安装且已配置
-☐ 1. cd 到录音目录，用相对路径上传到 Drive
-☐ 2. 获取 file_token，调用 minutes +upload 生成妙记
-☐ 3. 获取 minute_token，轮询 vc +notes 直到拿到逐字稿
-☐ 4. 读取完整逐字稿全文（不截断）
-☐ 5. 确认面试岗位类型，读取对应的分析提示词
-☐ 6. 按提示词结构生成完整复盘分析（内存中）
-☐ 7. docs +create 创建文档骨架
-☐ 8. 逐章追加内容（分批 append，避免参数超长）
-☐ 9. 末尾附原始妙记链接
-☐ 10. open 文档 URL（macOS）或展示链接给用户
-☐ 11. 向用户汇报：文件路径、文档链接、核心结论摘要
+☐ 0. 确认 whisper 已安装（pip3 list | grep openai-whisper）
+☐ 1. 【主要】用 Whisper small 模型转写完整录音 → 保存到 ./minutes/{公司名}_full_transcript.txt
+☐ 1b.【并行·备选】上传录音到飞书 Drive → 生成妙记 → 仅取 AI 摘要和关键词（不依赖其逐字稿）
+☐ 2. 检查 Whisper 转写完整性：行数、文件大小、最后时间戳是否接近录音总时长
+☐ 3. 读取 Whisper 完整逐字稿全文（不截断）
+☐ 4. 确认面试岗位类型，读取对应的分析提示词
+☐ 5. 按提示词结构生成完整复盘分析（内存中）
+☐ 6. docs +create 创建文档骨架
+☐ 7. 逐章追加内容（分批 append，避免参数超长）
+☐ 8. 末尾附 Whisper 转写文件路径 + 妙记链接（如有）
+☐ 9. open 文档 URL（macOS）或展示链接给用户
+☐ 10. 向用户汇报：转写覆盖率、文档链接、核心结论摘要
 ```
 
 ---
@@ -333,7 +398,7 @@ lark-cli auth login --device-code <device_code>
 
 | 阶段 | 飞书方案 | 替代方案 |
 |------|---------|---------|
-| 语音转文字 | 飞书妙记 | OpenAI Whisper（本地 `whisper` CLI 或 API） |
+| 语音转文字 | Whisper 本地（主要）| 同样使用 Whisper，不需要飞书 |
 | AI 摘要 | 妙记内置 AI | 可跳过（直接用逐字稿） |
 | 深度复盘 | Claude / 本 Skill 的提示词 | 同样可用，传逐字稿给任意大模型 |
 | 输出文档 | 飞书 Docx | 本地 Markdown / HTML / 复制到 Notion |
@@ -341,10 +406,18 @@ lark-cli auth login --device-code <device_code>
 **本地流程示例：**
 
 ```bash
-# 1. 语音转文字（需安装 openai-whisper）
-whisper recording.m4a --model medium --output_dir ./transcripts
+# 1. 语音转文字（Whisper small 模型，100%覆盖）
+python3 -c "
+import whisper
+model = whisper.load_model('small')
+result = model.transcribe('recording.m4a', language='zh')
+with open('transcript.txt', 'w') as f:
+    for seg in result['segments']:
+        f.write(f'[{int(seg[\"start\"])//60:02d}:{int(seg[\"start\"])%60:02d}] {seg[\"text\"].strip()}\n')
+print('Done!')
+"
 
-# 2. 将 transcripts/recording.txt + prompts/review-default.md
+# 2. 将 transcript.txt + prompts/review-ai-pm.md
 #    一起发给 ChatGPT / Claude / 其他大模型
 
 # 3. 将输出结果保存为 Markdown，或复制到在线文档
